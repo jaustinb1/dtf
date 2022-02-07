@@ -2,7 +2,31 @@ import tensorflow as tf
 import time
 import numpy as np
 
-class DistributedModel:
+class DistributedModel(tf.Module):
+
+    def __init__(self, update_method="assign"):
+        super().__init__()
+        self.update_method = update_method
+
+    def get_scatter_idx(self, var_name):
+        raise NotImplementedError
+
+    def _do_update(self, var_idx, update):
+        if self.update_method == "assign":
+            self.variables[var_idx].assign(update)
+        elif self.update_method == "scatter":
+            idx = self.get_scatter_index(self.variables[var_idx].name)
+            self.variables[var_idx][idx] = update
+        else:
+            raise NotImplementedError
+
+    def update_variables(self, updates):
+        for i in range(len(self.variables)):
+            name = self.variables[i].name
+            self._do_update(i, updates[name])
+
+
+class DistributedModule:
     def __init__(self, base_model,
                  cluster=None,
                  source=None,
@@ -128,9 +152,7 @@ class DistributedModel:
                 s = f"({source_ind},{sink_ind})"
                 if self._update_queues[s].size() > 0:
                     update = self._update_queues[s].dequeue()
-                    for i in range(len(self.variables)):
-                        name = self.variables[i].name
-                        self.variables[i].assign(update[name])
+                    self._base_model.update_variables(update)
                     print("Successfully pulled update")
                     return
                 else:
@@ -152,8 +174,6 @@ class DistributedModel:
             if updates[i] > 0:
                 s = f"({i},{self.index})"
                 update = self._update_queues[s].dequeue()
-                for i in range(len(self.variables)):
-                    name = self.variables[i].name
-                    self.variables[i].assign(update[name])
+                self._base_model.update_variables(update)
                 print("Successfully pulled update")
                 break

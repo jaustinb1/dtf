@@ -3,7 +3,7 @@ import tensorflow as tf
 import multiprocessing
 import time
 from dtf.cluster import Cluster
-from dtf.modules import DistributedModel
+from dtf.modules import DistributedModule, DistributedModel
 import numpy as np
 
 physical_devices = tf.config.list_physical_devices('GPU')
@@ -15,7 +15,7 @@ except:
   pass
 
 
-class DummyModel(tf.Module):
+class DummyModel(DistributedModel):
     def __init__(self):
         super().__init__()
         self.v = tf.Variable(0.0)
@@ -44,7 +44,7 @@ def multisink_fn(args):
     clus = Cluster(cluster_dict, name, task)
     clus.start()
 
-    model = DistributedModel(DummyModel(),
+    model = DistributedModule(DummyModel(),
                              cluster=clus,
                              source=source,
                              sink=sink,
@@ -70,7 +70,7 @@ def multisource_fn(args):
     clus = Cluster(cluster_dict, name, task)
     clus.start()
 
-    model = DistributedModel(DummyModel(),
+    model = DistributedModule(DummyModel(),
                              cluster=clus,
                              source=source,
                              sink=sink,
@@ -105,7 +105,7 @@ def matrixed_fn(args):
     clus = Cluster(cluster_dict, name, task)
     clus.start()
 
-    model = DistributedModel(DummyModel(),
+    model = DistributedModule(DummyModel(),
                              cluster=clus,
                              source=source,
                              sink=sink,

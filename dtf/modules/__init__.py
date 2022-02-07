@@ -1,1 +1,2 @@
 from .distributed_module import DistributedModel
+from .distributed_module import DistributedModule
