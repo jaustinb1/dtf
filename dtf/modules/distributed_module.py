@@ -33,7 +33,12 @@ class DistributedModel(tf.Module):
 
 
 class DistributedModule:
-
+    """
+    A module which should communicate with other modules.
+    A module is defined as a block which can optionally take
+    as input (data_source) data output by another models, process
+    it, and then optionally output to another module (data_sink).
+    """
     def __init__(self, base_model,
                  data_source=None,
                  data_sink=None,
@@ -41,9 +46,27 @@ class DistributedModule:
                  module_name=None,
                  task=None,
                  index=None,
-                 storage_spec=None,
                  push_to_all=False):
-
+        """
+        base_model: the DistributedModel instance that we are wrapping
+                    with communication
+        data_source: an optional source of data that is inbound into this
+                     module
+        data_sink: an optional destination for outbound data from this module
+        cluster: a dtf.cluster.Cluster object defining the cluster
+        module_name: a key corresponding to a type of job in the cluster
+                     this is the module name which can process the data
+                     and serve as a relay between source and sink. For
+                     instance this can be ReplayBuffer which takes as input
+                     data from a worker and outputs data to a learner.
+        task: the name corresponding to the current task, used to identify
+              what job we are in the cluster
+        index: the task index in the cluster corresponding to the current job
+        push_to_all: if we are a data_source with multiple destination modules
+                     or if we are an instance of module_name with multiple
+                     data_sinks, a call to push() will push data to all
+                     destinations.
+        """
         self._base_model = base_model
         self.cluster = cluster
 
@@ -51,7 +74,6 @@ class DistributedModule:
         self._data_sink = data_sink
         self._module_name = module_name
         self._index = index
-        self._storage_spec = storage_spec
         self._push_to_all = push_to_all
 
         self._is_source = task == self._data_source
