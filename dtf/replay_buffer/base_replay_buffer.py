@@ -3,7 +3,6 @@ import numpy as np
 
 from dtf.modules import DistributedModel
 
-
 class ReplayBuffer(DistributedModel):
 
     def __init__(self, storage_spec, capacity):
@@ -31,7 +30,6 @@ class ReplayBuffer(DistributedModel):
             self.size += 1
         else:
             idx = np.random.randint(0, self.size)
-
         return idx
 
     def sample(self):

@@ -38,19 +38,52 @@ def wait_for_shutdown(distributed_model):
         if flg:
             break
 
-def multisink_fn(args):
-    cluster_dict, name, task, source, sink, push_to_all = args
+def testpush_fn(args):
+    cluster_dict, module_name, task, task_idx, \
+        source, sink, push_to_all = args
 
-    clus = Cluster(cluster_dict, name, task)
+    clus = Cluster(cluster_dict, task, task_idx)
     clus.start()
 
     model = DistributedModule(DummyModel(),
-                             cluster=clus,
-                             source=source,
-                             sink=sink,
-                             mode=name,
-                             index=task, push_to_all=push_to_all)
-    if name == source:
+                              cluster=clus,
+                              data_source=source,
+                              module_name=module_name,
+                              task=task,
+                              index=task_idx,
+                              push_to_all=push_to_all)
+
+    if task == source:
+        model._base_model.v.assign(1.0)
+        if push_to_all:
+            model.push()
+        else:
+            model.push(force_ind=0)
+            model.push(force_ind=1)
+        for k in model._update_queues:
+            assert model._update_queues[k].size() == 1
+            model._update_queues[k].dequeue()
+        wait_for_shutdown(model)
+    else:
+        time.sleep(3)
+        wait_for_shutdown(model)
+
+def testpull_fn(args):
+    cluster_dict, module_name, task, task_idx, \
+        source, sink, push_to_all = args
+
+    clus = Cluster(cluster_dict, task, task_idx)
+    clus.start()
+
+    model = DistributedModule(DummyModel(),
+                              cluster=clus,
+                              data_source=source,
+                              module_name=module_name,
+                              task=task,
+                              index=task_idx,
+                              push_to_all=push_to_all)
+
+    if task == source:
         model._base_model.v.assign(1.0)
         if push_to_all:
             model.push()
@@ -64,135 +97,139 @@ def multisink_fn(args):
         assert model(5.0) == 5.0
         wait_for_shutdown(model)
 
-def multisource_fn(args):
-    cluster_dict, name, task, source, sink = args
+def test_multisource_fn(args):
+    cluster_dict, module_name, task, task_idx, \
+        source, sink, push_to_all = args
 
-    clus = Cluster(cluster_dict, name, task)
+    clus = Cluster(cluster_dict, task, task_idx)
     clus.start()
 
     model = DistributedModule(DummyModel(),
-                             cluster=clus,
-                             source=source,
-                             sink=sink,
-                             mode=name,
-                             index=task,
-                             storage_spec={'dtypes': [tf.float32],
-                                           'shapes': [(1,)],
-                                           'names': ['test']})
-    if name == source:
-        model.push({'test': np.array([task])})
+                              cluster=clus,
+                              data_source=source,
+                              module_name=module_name,
+                              task=task,
+                              index=task_idx,
+                              push_to_all=push_to_all)
+
+    if task == source:
+        model._base_model.v.assign(task_idx + 1)
+        model.push()
         wait_for_shutdown(model)
     else:
-        found_updates = []
-        while True:
-            for s in model._update_queues:
-                if model._update_queues[s].size() > 0:
-                    update = model._update_queues[s].dequeue()
-                    assert 'test' in update
-                    found_updates.append(update['test'].numpy()[0])
-                    print("Found update")
-            if len(found_updates) == clus.count(source):
-                break
-            time.sleep(1)
+        assert model(5.0) == 0.0
+        model.pull()
+        pull1 = model(5.0)
+        assert pull1 == 5.0 or pull1 == 10.0
+        model.pull()
+        pull2 = model(5.0)
+        if pull1 == 5.0:
+            assert pull2 == 10.0
+        else:
+            assert pull2 == 5.0
         wait_for_shutdown(model)
 
-        assert 0 in found_updates
-        assert 1 in found_updates
+def test_chain_fn(args):
+    cluster_dict, module_name, task, task_idx, \
+        source, sink, push_to_all = args
 
-def matrixed_fn(args):
-    cluster_dict, name, task, source, sink = args
-
-    clus = Cluster(cluster_dict, name, task)
+    clus = Cluster(cluster_dict, task, task_idx)
     clus.start()
 
     model = DistributedModule(DummyModel(),
-                             cluster=clus,
-                             source=source,
-                             sink=sink,
-                             mode=name,
-                             index=task,
-                             storage_spec={'dtypes': [tf.float32],
-                                           'shapes': [(1,)],
-                                           'names': ['test']},
-                             push_to_all=True)
-    if name == source:
-        model.push({'test': np.array([task])})
+                              cluster=clus,
+                              data_source=source,
+                              data_sink=sink,
+                              module_name=module_name,
+                              task=task,
+                              index=task_idx,
+                              push_to_all=push_to_all)
+    if task == source:
+        model._base_model.v.assign(1.0)
+        model.push()
+        wait_for_shutdown(model)
+    elif task == module_name:
+        model.pull()
+        model.push()
         wait_for_shutdown(model)
     else:
-        found_updates = []
-        while True:
-            for s in model._update_queues:
-                if int(s[-2]) != task:
-                    continue
-                try:
-                    if model._update_queues[s].size() > 0:
-                        update = model._update_queues[s].dequeue()
-                        assert 'test' in update
-                        found_updates.append(update['test'].numpy()[0])
-                        print("Found update", task, found_updates)
-                except Exception as e:
-                    print(e)
-                    break
-            if len(found_updates) == clus.count(source):
-                break
-            time.sleep(1)
+        assert task == sink
+        assert model(5.0) == 0.0
+        model.pull()
+        assert model(5.0) == 5.0
         wait_for_shutdown(model)
-        print(found_updates)
-        assert 0 in found_updates
-        assert 1 in found_updates
-
-
 
 class TestDistributedModel(unittest.TestCase):
 
-    def test_multisink_push_to_one(self):
+    def test_push(self):
         cluster_dict = {'learner': ['localhost:6006'],
                         'worker': ['localhost:6007', 'localhost:6008']}
         with multiprocessing.Pool(3) as pool:
-            pool.map(multisink_fn, [(cluster_dict, 'learner', 0,
-                                     'learner', 'worker', False),
-                                    (cluster_dict, 'worker', 0,
-                                     'learner', 'worker', False),
-                                    (cluster_dict, 'worker', 1,
-                                     'learner', 'worker', False)])
+            # cluster_dict, module_name, task, task_idx,
+            # source, sink, push_to_all
+            pool.map(testpush_fn, [(cluster_dict, 'worker', 'learner', 0,
+                                     'learner', None, False),
+                                    (cluster_dict, 'worker', 'worker', 0,
+                                     'learner', None, False),
+                                    (cluster_dict, 'worker', 'worker', 1,
+                                     'learner', None, False)])
+        with multiprocessing.Pool(3) as pool:
+            pool.map(testpush_fn, [(cluster_dict, 'worker', 'learner', 0,
+                                     'learner', None, True),
+                                    (cluster_dict, 'worker', 'worker', 0,
+                                     'learner', None, True),
+                                    (cluster_dict, 'worker', 'worker', 1,
+                                     'learner', None, True)])
         print("Done")
 
-    def test_multisink_push_to_all(self):
+    def test_pull(self):
         cluster_dict = {'learner': ['localhost:6006'],
                         'worker': ['localhost:6007', 'localhost:6008']}
         with multiprocessing.Pool(3) as pool:
-            pool.map(multisink_fn, [(cluster_dict, 'learner', 0,
-                                     'learner', 'worker', True),
-                                    (cluster_dict, 'worker', 0,
-                                     'learner', 'worker', True),
-                                    (cluster_dict, 'worker', 1,
-                                     'learner', 'worker', True)])
+            # cluster_dict, module_name, task, task_idx,
+            # source, sink, push_to_all
+            pool.map(testpull_fn, [(cluster_dict, 'worker', 'learner', 0,
+                                     'learner', None, False),
+                                    (cluster_dict, 'worker', 'worker', 0,
+                                     'learner', None, False),
+                                    (cluster_dict, 'worker', 'worker', 1,
+                                     'learner', None, False)])
+        with multiprocessing.Pool(3) as pool:
+            pool.map(testpull_fn, [(cluster_dict, 'worker', 'learner', 0,
+                                     'learner', None, True),
+                                    (cluster_dict, 'worker', 'worker', 0,
+                                     'learner', None, True),
+                                    (cluster_dict, 'worker', 'worker', 1,
+                                     'learner', None, True)])
         print("Done")
 
     def test_multisource(self):
-        cluster_dict = {'learner': ['localhost:6006'],
-                        'worker': ['localhost:6007', 'localhost:6008']}
+        cluster_dict = {'worker': ['localhost:6006'],
+                        'learner': ['localhost:6007', 'localhost:6008']}
         with multiprocessing.Pool(3) as pool:
-            pool.map(multisource_fn, [(cluster_dict, 'learner', 0,
-                                     'worker', 'learner'),
-                                    (cluster_dict, 'worker', 0,
-                                     'worker', 'learner'),
-                                    (cluster_dict, 'worker', 1,
-                                     'worker', 'learner')])
+            # cluster_dict, module_name, task, task_idx,
+            # source, sink, push_to_all
+            pool.map(test_multisource_fn, [(cluster_dict, 'worker', 'learner', 0,
+                                            'learner', None, False),
+                                           (cluster_dict, 'worker', 'learner', 1,
+                                            'learner', None, False),
+                                           (cluster_dict, 'worker', 'worker', 0,
+                                            'learner', None, False)])
         print("Done")
 
-    def test_matrixed(self):
-        cluster_dict = {'learner': ['localhost:6005', 'localhost:6006'],
-                        'worker': ['localhost:6007', 'localhost:6008']}
-        with multiprocessing.Pool(4) as pool:
-            pool.map(matrixed_fn, [(cluster_dict, 'learner', 0,
-                                     'worker', 'learner'),
-                                      (cluster_dict, 'learner', 1,
-                                     'worker', 'learner'),
-                                      (cluster_dict, 'worker', 0,
-                                       'worker', 'learner'),
-                                      (cluster_dict, 'worker', 1,
-                                       'worker', 'learner')])
+    def test_chain(self):
+        cluster_dict = {'worker': ['localhost:6006'],
+                        'learner': ['localhost:6007'],
+                        'replay': ['localhost:6008']}
+        with multiprocessing.Pool(3) as pool:
+            # cluster_dict, module_name, task, task_idx,
+            # source, sink, push_to_all
+            pool.map(test_chain_fn, [(cluster_dict, 'replay', 'learner', 0,
+                                            'worker', 'learner', False),
+                                           (cluster_dict, 'replay', 'replay', 0,
+                                            'worker', 'learner', False),
+                                           (cluster_dict, 'replay', 'worker', 0,
+                                            'worker', 'learner', False)])
         print("Done")
 
 

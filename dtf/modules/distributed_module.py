@@ -23,160 +23,194 @@ class DistributedModel(tf.Module):
             raise NotImplementedError
 
     def update_variables(self, updates):
-        scatter_index = self.get_scatter_index()
+        scatter_index = self.get_scatter_idx()
         for i in range(len(self.variables)):
             name = self.variables[i].name
             self._do_update(i, updates[name], scatter_index)
 
+    def handle_data(self, updates):
+        self.update_variables(updates)
+
 
 class DistributedModule:
+
     def __init__(self, base_model,
+                 data_source=None,
+                 data_sink=None,
                  cluster=None,
-                 source=None,
-                 sink=None,
-                 mode=None,
+                 module_name=None,
+                 task=None,
                  index=None,
                  storage_spec=None,
                  push_to_all=False):
+
         self._base_model = base_model
-        self._cluster = cluster
-        self._multi_sink = cluster.count(sink) > 1
-        self._multi_source = cluster.count(source) > 1
+        self.cluster = cluster
+
+        self._data_source = data_source
+        self._data_sink = data_sink
+        self._module_name = module_name
+        self._index = index
         self._storage_spec = storage_spec
-        self.is_source = mode == source
-        self.source = source
-        self.sink = sink
         self._push_to_all = push_to_all
-        self._matrixed = self._multi_sink and self._multi_source
 
-        if self._multi_sink and self._multi_source:
-            self._num_replicas = cluster.count(sink) * cluster.count(source)
-            self.update_devices = []
-            for _ in range(cluster.count(source)):
-                buff = []
-                for sink_ind in range(cluster.count(sink)):
-                    buff.append(self._cluster.get_device(sink, sink_ind))
-                self.update_devices.append(buff)
-        elif self._multi_sink:
-            # Single source, multiple sinks
-            assert not self._multi_source
-            self._num_replicas = cluster.count(sink)
-            self.update_devices = [[
-                self._cluster.get_device(source)] * self._num_replicas]
-        else:
-            # Multiple sources, single sink
-            assert not self._multi_sink
-            self._num_replicas = cluster.count(source)
-            self.update_devices = [
-                [self._cluster.get_device(sink)]]*self._num_replicas
+        self._is_source = task == self._data_source
+        self._is_sink = task == self._data_sink
+        self._is_module = task == self._module_name
 
-        self.update_name = f"{source}->{sink}"
-        self.index = index
+        self._num_module = cluster.count(module_name)
+        self._num_sources = 0 if not data_source else cluster.count(data_source)
+        self._num_sinks = 0 if not data_sink else cluster.count(data_sink)
 
         self._update_queues = {}
-        self._make_update()
 
-    def __call__(self, x):
-        return self._base_model(x)
+        self._make_queues()
 
     @property
     def variables(self):
         return self._base_model.variables
 
-    def _make_update(self):
-        if self._multi_sink and not self._matrixed:
-            variables = self.variables
-            dtypes = [v.dtype for v in variables]
-            shapes = [v.shape for v in variables]
-            names = [v.name for v in variables]
-        else:
-            dtypes = self._storage_spec['dtypes']
-            shapes = self._storage_spec['shapes']
-            names = self._storage_spec['names']
+    def __call__(self, x):
+        return self._base_model(x)
 
-        tag = [f"({i})" for i in range(self._num_replicas)]
-        tag = []
-        for source_ind in range(self._cluster.count(self.source)):
-            buff = []
-            for sink_ind in range(self._cluster.count(self.sink)):
-                buff.append(f"({source_ind},{sink_ind})")
-            tag.append(buff)
+    def _make_queues(self):
 
-        if self._multi_sink:
-            name_fn = lambda x: self.update_name + x
-        else:
-            name_fn = lambda x: x + self.update_name
+        variables = self.variables
 
-        for source_ind in range(len(tag)):
-            for sink_ind in range(len(tag[source_ind])):
-                with tf.device(self.update_devices[source_ind][sink_ind]):
-                    s = tag[source_ind][sink_ind]
-                    self._update_queues[s] = tf.queue.FIFOQueue(
-                        capacity=1, dtypes=dtypes,
+        dtypes = [v.dtype for v in variables]
+        shapes = [v.shape for v in variables]
+        names = [v.name for v in variables]
+
+        # By convention, we set the device for a queue to be
+        # on the source of the queue rather than the destination
+
+        # Build the inbound queues
+        inbound_queues = []
+        inbound_devices = []
+        prefix = f"{self._module_name}InboundFrom{self._data_source}"
+        for source_ind in range(self._num_sources):
+            queue_buff = []
+            devices_buff = []
+            for module_ind in range(self._num_module):
+                queue_buff.append(
+                    f"{prefix}({source_ind},{module_ind})")
+                devices_buff.append(
+                    self.cluster.get_device(self._data_source, source_ind)
+                )
+
+            inbound_queues.append(queue_buff)
+            inbound_devices.append(devices_buff)
+
+        # Build the outbound queues
+        outbound_queues = []
+        outbound_devices = []
+        prefix = f"{self._module_name}OutboundTo{self._data_sink}"
+        for module_ind in range(self._num_module):
+            queue_buff = []
+            devices_buff = []
+            for sink_ind in range(self._num_sinks):
+                queue_buff.append(
+                    f"{prefix}({module_ind},{sink_ind})")
+                devices_buff.append(
+                    self.cluster.get_device(
+                        self._module_name, module_ind))
+            outbound_queues.append(queue_buff)
+            outbound_devices.append(devices_buff)
+        for source_ind in range(self._num_sources):
+            for module_ind in range(self._num_module):
+                with tf.device(inbound_devices[source_ind][module_ind]):
+                    name = inbound_queues[source_ind][module_ind]
+                    self._update_queues[name] = tf.queue.FIFOQueue(
+                        capacity=10, dtypes=dtypes,
                         shapes=shapes, names=names,
-                        shared_name=name_fn(s),
-                        name=name_fn(s))
+                        shared_name=name,
+                        name=name)
+        for module_ind in range(self._num_module):
+            for sink_ind in range(self._num_sinks):
+                with tf.device(outbound_devices[module_ind][sink_ind]):
+                    name = outbound_queues[module_ind][sink_ind]
+                    self._update_queues[name] = tf.queue.FIFOQueue(
+                        capacity=10, dtypes=dtypes,
+                        shapes=shapes, names=names,
+                        shared_name=name,
+                        name=name)
 
     def push(self, data=None, force_ind=None):
-        assert self.is_source
 
-        if not self._multi_sink or self._push_to_all:
-            # single sink or multi sink but pushing updates to all
-            sink_id = range(self._cluster.count(self.sink))
+        assert self._is_source or self._is_module
+        assert (self._is_source and self._num_sources) or (
+            self._is_module and self._num_module)
+        assert not (self._push_to_all and (force_ind is not None))
+
+        num_sinks = self._num_module if self._is_source else self._num_sinks
+        if force_ind is not None:
+            sink_inds = [force_ind]
+        elif not self._push_to_all:
+            sink_inds = [
+                np.random.choice(
+                    range(num_sinks))
+            ]
         else:
-            assert not self._push_to_all
-            if force_ind is not None:
-                sink_id = [force_ind]
-            else:
-                sink_id = [np.random.choice(
-                    range(self._cluster.count(self.sink)))]
-        for source_ind in range(self._cluster.count(self.source)):
-            if source_ind != self.index:
+            # push to all
+            sink_inds = list(range(num_sinks))
+
+        if self._is_source:
+            prefix = f"{self._module_name}InboundFrom{self._data_source}"
+        else:
+            prefix = f"{self._module_name}OutboundTo{self._data_sink}"
+
+        num_sources = self._num_sources if self._is_source else self._num_module
+        for source_ind in range(num_sources):
+            if source_ind != self._index:
                 continue
-            for sink_ind in sink_id:
-                s = f"({source_ind},{sink_ind})"
+            for sink_ind in sink_inds:
+                name = f"{prefix}({source_ind},{sink_ind})"
                 if data:
-                    self._update_queues[s].enqueue({
+                    # If we have data, we send it
+                    self._update_queues[name].enqueue({
                         k: v for k, v in data.items()
                     })
                 else:
-                    self._update_queues[s].enqueue({
+                    # If we do not have data, assume we are sending
+                    # the variables from the current module
+                    self._update_queues[name].enqueue({
                         v.name: v for v in self.variables
                     })
-        print("Pushed all updates")
+                print("Pushed updates")
 
-    def maybe_pull(self):
-        assert not self.is_source
+    def pull(self, wait=True):
+        assert self._is_sink or self._is_module
+        assert (self._is_sink and self._num_sinks) or (
+            self._is_module and self._num_module)
 
-        for source_ind in range(self._cluster.count(self.source)):
-            for sink_ind in range(self._cluster.count(self.sink)):
-                if sink_ind != self.index:
-                    continue
-                s = f"({source_ind},{sink_ind})"
-                if self._update_queues[s].size() > 0:
-                    update = self._update_queues[s].dequeue()
-                    self._base_model.update_variables(update)
-                    print("Successfully pulled update")
-                    return
-                else:
-                    print("Nothing to pull")
+        if self._is_module:
+            prefix = f"{self._module_name}InboundFrom{self._data_source}"
+        else:
+            prefix = f"{self._module_name}OutboundTo{self._data_sink}"
 
-    def pull(self):
-        assert not self.is_source
+        num_source = self._num_module if self._is_sink else self._num_sources
+        num_sink = self._num_module if self._is_module else self._num_sinks
 
         def avaialble_updates():
-            return [self._update_queues[f"({s},{self.index})"].size() for s in
-                    range(self._cluster.count(self.source))]
+            return [self._update_queues[f"{prefix}({s},{self._index})"].size() for s in
+                    range(num_source)]
+        if wait:
+            while np.sum(avaialble_updates()) == 0:
+                print("waiting for update")
+                time.sleep(1)
 
-        while np.sum(avaialble_updates()) == 0:
-            print("waiting for update")
-            time.sleep(1)
+        for source_ind in range(num_source):
+            for sink_ind in range(num_sink):
+                if sink_ind != self._index:
+                    continue
+                name = f"{prefix}({source_ind},{sink_ind})"
+                if self._update_queues[name].size() > 0:
+                    update = self._update_queues[name].dequeue()
+                    self._base_model.handle_data(update)
+                    print("Pulled update")
+                    return
+        print("No updates")
+        return None
 
-        updates = avaialble_updates()
-        for i in range(len(updates)):
-            if updates[i] > 0:
-                s = f"({i},{self.index})"
-                update = self._update_queues[s].dequeue()
-                self._base_model.update_variables(update)
-                print("Successfully pulled update")
-                break
+    def maybe_update(self):
+        return self.pull(wait=False)
