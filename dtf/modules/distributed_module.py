@@ -8,22 +8,25 @@ class DistributedModel(tf.Module):
         super().__init__()
         self.update_method = update_method
 
-    def get_scatter_idx(self, var_name):
-        raise NotImplementedError
+    def get_scatter_idx(self):
+        if self.update_method == "scatter":
+            raise NotImplementedError
+        return None
 
-    def _do_update(self, var_idx, update):
+    def _do_update(self, var_idx, update, scatter_idx=None):
         if self.update_method == "assign":
             self.variables[var_idx].assign(update)
         elif self.update_method == "scatter":
-            idx = self.get_scatter_index(self.variables[var_idx].name)
-            self.variables[var_idx][idx] = update
+            self.variables[var_idx] = tf.tensor_scatter_nd_update(
+                self.variables[var_idx], [[scatter_idx]], update)
         else:
             raise NotImplementedError
 
     def update_variables(self, updates):
+        scatter_index = self.get_scatter_index()
         for i in range(len(self.variables)):
             name = self.variables[i].name
-            self._do_update(i, updates[name])
+            self._do_update(i, updates[name], scatter_index)
 
 
 class DistributedModule:
