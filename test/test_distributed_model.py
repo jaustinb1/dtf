@@ -6,6 +6,8 @@ from dtf.cluster import Cluster
 from dtf.modules import DistributedModule, DistributedModel
 import numpy as np
 
+from test_utils import wait_for_shutdown
+
 physical_devices = tf.config.list_physical_devices('GPU')
 try:
     for device in physical_devices:
@@ -22,21 +24,6 @@ class DummyModel(DistributedModel):
 
     def __call__(self, x):
         return x * self.v
-
-def wait_for_shutdown(distributed_model):
-    while True:
-        time.sleep(1)
-        flg = True
-        for q in distributed_model._update_queues:
-            try:
-                if distributed_model._update_queues[q].size() > 0:
-                    flg = False
-                    break
-            except:
-                # workers have finished
-                return
-        if flg:
-            break
 
 def testpush_fn(args):
     cluster_dict, module_name, task, task_idx, \

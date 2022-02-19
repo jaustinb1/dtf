@@ -46,7 +46,9 @@ class DistributedModule:
                  module_name=None,
                  task=None,
                  index=None,
-                 push_to_all=False):
+                 push_to_all=False,
+                 inbound_size=0,
+                 outbound_size=0):
         """
         base_model: the DistributedModel instance that we are wrapping
                     with communication
@@ -69,6 +71,8 @@ class DistributedModule:
         """
         self._base_model = base_model
         self.cluster = cluster
+        self._inbound_size = inbound_size
+        self._outbound_size = outbound_size
 
         self._data_source = data_source
         self._data_sink = data_sink
@@ -92,16 +96,33 @@ class DistributedModule:
     def variables(self):
         return self._base_model.variables
 
+    @property
+    def distributed_variables(self):
+        return self.variables
+
     def __call__(self, x):
         return self._base_model(x)
 
     def _make_queues(self):
 
-        variables = self.variables
+        variables = self.distributed_variables
 
         dtypes = [v.dtype for v in variables]
         shapes = [v.shape for v in variables]
-        names = [v.name for v in variables]
+        names =  [v.name for v in variables]
+
+        inbound_shapes = []
+        outbound_shapes = []
+        for i in range(len(shapes)):
+            if self._inbound_size > 0:
+                inbound_shapes.append([self._inbound_size] + shapes[i])
+            else:
+                inbound_shapes.append(shapes[i])
+            if self._outbound_size > 0:
+                outbound_shapes.append([self._outbound_size] + shapes[i])
+            else:
+                outbound_shapes.append(shapes[i])
+
 
         # By convention, we set the device for a queue to be
         # on the source of the queue rather than the destination
@@ -144,7 +165,7 @@ class DistributedModule:
                     name = inbound_queues[source_ind][module_ind]
                     self._update_queues[name] = tf.queue.FIFOQueue(
                         capacity=10, dtypes=dtypes,
-                        shapes=shapes, names=names,
+                        shapes=inbound_shapes, names=names,
                         shared_name=name,
                         name=name)
         for module_ind in range(self._num_module):
@@ -153,7 +174,7 @@ class DistributedModule:
                     name = outbound_queues[module_ind][sink_ind]
                     self._update_queues[name] = tf.queue.FIFOQueue(
                         capacity=10, dtypes=dtypes,
-                        shapes=shapes, names=names,
+                        shapes=outbound_shapes, names=names,
                         shared_name=name,
                         name=name)
 
@@ -200,7 +221,7 @@ class DistributedModule:
                     })
                 print("Pushed updates")
 
-    def pull(self, wait=True):
+    def pull(self, wait=True, return_data=False):
         assert self._is_sink or self._is_module
         assert (self._is_sink and self._num_sinks) or (
             self._is_module and self._num_module)
@@ -228,8 +249,10 @@ class DistributedModule:
                 name = f"{prefix}({source_ind},{sink_ind})"
                 if self._update_queues[name].size() > 0:
                     update = self._update_queues[name].dequeue()
-                    self._base_model.handle_data(update)
                     print("Pulled update")
+                    if self._is_sink and return_data:
+                        return update
+                    self._base_model.handle_data(update)
                     return
         print("No updates")
         return None

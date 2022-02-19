@@ -60,5 +60,18 @@ class ReplayBuffer(DistributedModel):
 
         for k in self.storage:
             assert k in to_add, f"You are missing {k} in your data"
+            if len(to_add[k].shape) != len(self.storage[k].shape):
+                to_add[k] = [to_add[k]]
+
             self.storage[k] = tf.tensor_scatter_nd_update(
                 self.storage[k], idx, to_add[k])
+
+    def handle_data(self, data):
+        # Handle incoming data in the case of a distributed replay
+        self.add(data)
+
+def get_replay_buffer(name):
+    if name.lower() == 'replaybuffer' or 'replay':
+        return ReplayBuffer
+
+    raise NotImplementedError
