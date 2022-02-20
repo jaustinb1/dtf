@@ -7,6 +7,11 @@ import json
 import random
 from collections import defaultdict, deque
 
+# Ubuntu dimensions for side dock, top dock, and top bars of
+# windows.
+DOCK_SIZE = 80
+TOP_BAR_SIZE = 25
+WINDOW_BAR_SIZE = 28
 
 class Env:
 
@@ -59,10 +64,6 @@ class Env:
         return ret_data
 
     def _get_position_from_i(self, ind):
-        DOCK_SIZE = 80
-        TOP_BAR_SIZE = 25
-        WINDOW_BAR_SIZE = 28
-
         glfw.init()
         resolution, _, _ = glfw.get_video_mode(glfw.get_primary_monitor())
 
