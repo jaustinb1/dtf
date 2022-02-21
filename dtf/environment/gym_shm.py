@@ -2,7 +2,10 @@ import gym
 import mujoco_py
 
 class GymEnv:
-
+    """
+    A shim to adapt to customized version of mujoco_py to
+    enable tiled rendering.
+    """
     def __init__(self, env_name, render_params=None):
         self.render_params = render_params
         self._env = gym.make(env_name)
