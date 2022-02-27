@@ -2,11 +2,39 @@ import tensorflow as tf
 import time
 import numpy as np
 
-class DistributedModel(tf.Module):
-
-    def __init__(self, update_method="assign"):
+class Model(tf.Module):
+    """
+    A base model class intended to serve a shim allowing both
+    distributed execution as well as non distributed execution.
+    """
+    def __init__(self, observation_space, action_space):
         super().__init__()
+        self.observation_space = observation_space
+        self.action_space = action_space
+
+    def maybe_pull(self):
+        return
+
+    def pull(self, return_data=False):
+        return
+
+    def __call__(self, x, explore=False):
+        raise NotImplementedError
+
+class DistributedModel(Model):
+
+    def __init__(self, observation_space,
+                 action_space, update_method="assign"):
+        super().__init__()
+        self.observation_space = observation_space
+        self.action_space = action_space
         self.update_method = update_method
+
+    def maybe_pull(self):
+        raise RuntimeError("Distributed model needs to be wrapped in DistributedModule")
+
+    def pull(self, return_data=False):
+        raise RuntimeError("Distributed model needs to be wrapped in DistributedModule")
 
     def get_scatter_idx(self):
         if self.update_method == "scatter":
@@ -31,6 +59,8 @@ class DistributedModel(tf.Module):
     def handle_data(self, updates):
         self.update_variables(updates)
 
+    def __call__(self, x, explore=False):
+        raise NotImplementedError
 
 class DistributedModule:
     """

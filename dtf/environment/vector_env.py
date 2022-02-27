@@ -116,15 +116,17 @@ class Env:
                 if data == "rgb_array":
                     return_data = {"image": res}
             elif mode == "step":
-                obs, rew, done, info = env.step(data)
+                next_obs, rew, done, info = env.step(data)
                 rewards_list.append(rew)
 
                 return_data = {
-                    "observation": obs.copy(),
+                    "observation": obs.copy()
+                    "next_observation": next_obs.copy(),
                     "reward": rew,
                     "done": done,
                     "info": info
                 }
+                obs = next_obs
                 if done:
                     obs = env.reset()
                     rewards_buff.append(rewards_list)

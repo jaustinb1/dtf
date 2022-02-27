@@ -33,6 +33,9 @@ class DistributedRelayBuffer(DistributedModule):
                          inbound_size=0,
                          outbound_size=batch_size)
 
+    def add(self, data):
+        self.push(data)
+
     @property
     def distributed_variables(self):
         return [
